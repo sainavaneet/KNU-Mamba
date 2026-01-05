@@ -37,7 +37,8 @@ SIGLIP_MEAN = (0.5, 0.5, 0.5)
 SIGLIP_STD = (0.5, 0.5, 0.5)
 
 
-DEFAULT_EAGLE_MODEL_NAME = "/home/navaneet/original3/MambaVLA/backbones/eagle/eagle2_hg_model"
+# Use relative path based on file location (this file is in the model directory)
+DEFAULT_EAGLE_MODEL_NAME = os.path.dirname(__file__)
 
 
 def get_seq_frames(total_num_frames, desired_num_frames=-1, stride=-1):

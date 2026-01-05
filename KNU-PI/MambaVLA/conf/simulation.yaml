@@ -1,0 +1,13 @@
+# @package simulation
+_target_: MambaVLA.benchmark.libero.libero_sim.LiberoSim
+rollouts: 1
+max_step_per_episode: 600
+use_eye_in_hand: false
+seed: 0
+device: cuda
+render_image: false
+n_cores: 2
+use_multiprocessing: false
+save_video: true
+save_video_dir: /home/navaneet/MambaVLA_evaluation/videos/
+

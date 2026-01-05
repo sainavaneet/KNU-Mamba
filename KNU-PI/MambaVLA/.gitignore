@@ -20,7 +20,7 @@ test_mambaVLA.egg-info/
 *.pt.tar.bz2
 *.pth.tar.xz
 *.pt.tar.xz
-
+outputs/
 wandb/
 runs/
 *.log

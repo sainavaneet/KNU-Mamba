@@ -1,0 +1,22 @@
+_target_: MambaVLA.MultiImageEagleObsEncoder
+shape_meta:
+  obs:
+    agentview_image:
+      shape: [3, 128, 128]
+      type: rgb
+    eye_in_hand_image:
+      shape: [3, 128, 128]
+      type: rgb
+latent_dim: 256
+
+tune_llm: false
+tune_visual: true
+reproject_vision: false
+scale_image_resolution: 1
+processor_cfg: null
+projector_dim: -1
+allow_reshape_visual: true
+use_local_eagle_hg_model: true
+input_size: 224
+norm_type: siglip
+

@@ -1,0 +1,28 @@
+# @package dataset
+_target_: MambaVLA.benchmark.libero.libero_dataset.LiberoDataset
+benchmark_type: libero_goal
+demos_per_task: 10
+dataset_path: /home/navaneet/LIBERO/libero/datasets/libero_goal
+perception_seq_len: 1
+action_seq_len: 10
+multistep: 10
+goal_conditioned: true
+use_pos_emb: true
+num_sampling_steps: 4
+if_use_ema: true
+obs_tokens: 2
+obs_dim: 9
+action_dim: 7
+state_dim: 9
+max_len_data: 347
+consider_robot_states: false
+camera_names:
+  - agentview
+  - eye_in_hand
+len_embd: 256
+lang_emb_dim: 512
+latent_dim: 256
+n_heads: 4
+mamba_encoder_cfg: {}
+mamba_n_layer_encoder: 4
+

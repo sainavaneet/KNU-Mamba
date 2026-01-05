@@ -1,22 +1,21 @@
 """
-Eagle-based observation encoder for replacing ResNet in MambaVLA.
-This encoder processes multi-camera observations using the Eagle backbone.
+Eagle-based joint encoder that processes both images and text together.
+This encoder uses Eagle backbone to encode images and text jointly, creating unified embeddings.
 """
 
 import torch
 import torch.nn as nn
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Union
 from transformers.feature_extraction_utils import BatchFeature
 from .eagle_backbone import EagleBackbone, DEFAULT_EAGLE_MODEL_NAME
 from .eagle2_hg_model.inference_eagle_repo import EagleProcessor, ModelSpecificValues, build_transform
 import torchvision.transforms.functional as TF
-from PIL import Image
 
 
-class EagleObsEncoder(nn.Module):
+class EagleJointEncoder(nn.Module):
     """
-    Eagle-based observation encoder that processes multi-camera images.
-    Replaces ResNet-based encoders with Eagle backbone for better vision-language understanding.
+    Eagle-based joint encoder that processes both images and text together.
+    This creates unified embeddings where image and text information are jointly encoded.
     """
     
     def __init__(
@@ -24,8 +23,8 @@ class EagleObsEncoder(nn.Module):
         camera_names: List[str],
         latent_dim: int = 256,
         model_name: str = DEFAULT_EAGLE_MODEL_NAME,
-        tune_llm: bool = False,
-        tune_visual: bool = True,  # Allow tuning visual features for observation encoding
+        tune_llm: bool = True,  # Allow tuning language model
+        tune_visual: bool = True,  # Allow tuning visual features
         reproject_vision: bool = False,
         scale_image_resolution: int = 1,
         processor_cfg: Optional[dict] = None,
@@ -56,7 +55,7 @@ class EagleObsEncoder(nn.Module):
             use_local_eagle_hg_model=use_local_eagle_hg_model,
         )
         
-        # Initialize processor for image preprocessing
+        # Initialize processor for image and text preprocessing
         if processor_cfg is None:
             processor_cfg = {
                 "model_path": model_name,
@@ -80,22 +79,22 @@ class EagleObsEncoder(nn.Module):
         # Build transform for image preprocessing
         self.transform = build_transform(input_size=input_size, norm_type=norm_type)
         
-        # Projection layer will be created lazily after first forward pass
-        # to match the actual output dimension from Eagle backbone
-        self.projection = None
-        self.latent_dim = latent_dim
-        self._projection_initialized = False
+        # Projection layer to match expected latent dimension
+        eagle_output_dim = 1536  # Eagle's default output dimension
+        if projector_dim != -1:
+            eagle_output_dim = projector_dim
+            
+        self.projection = nn.Linear(eagle_output_dim, latent_dim)
         
         # Dummy variable for device compatibility
         self._dummy_variable = nn.Parameter(torch.zeros(0))
     
     def _preprocess_images(self, obs_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
-        Preprocess images from obs_dict into the format expected by Eagle.
+        Preprocess images from multiple cameras into the format expected by Eagle.
         
         Args:
-            obs_dict: Dictionary containing image tensors (can be single camera or multiple)
-                    Keys should be like "agentview_image", "eye_in_hand_image"
+            obs_dict: Dictionary containing image tensors for each camera
             
         Returns:
             torch.Tensor: Preprocessed images [batch_size, channels, height, width]
@@ -103,11 +102,12 @@ class EagleObsEncoder(nn.Module):
         batch_size = None
         processed_images = []
         
-        # Process whatever images are in obs_dict (not necessarily all cameras)
-        for image_key, images in obs_dict.items():
-            # Skip non-image keys
-            if 'image' not in image_key and 'rgb' not in image_key and 'img' not in image_key:
-                continue
+        for camera_name in self.camera_names:
+            image_key = f"{camera_name}_image"
+            if image_key not in obs_dict:
+                raise KeyError(f"Expected key '{image_key}' not found in obs_dict")
+            
+            images = obs_dict[image_key]  # [batch_size, channels, height, width]
             
             if batch_size is None:
                 batch_size = images.shape[0]
@@ -135,53 +135,120 @@ class EagleObsEncoder(nn.Module):
             camera_images = torch.stack(camera_images).to(images.device)
             processed_images.append(camera_images)
         
-        if len(processed_images) == 0:
-            raise ValueError("No valid image keys found in obs_dict")
-        
         # For now, we'll use the first camera's images
         # TODO: Consider how to handle multiple cameras with Eagle
         return processed_images[0]
     
-    def _create_eagle_inputs(self, images: torch.Tensor, batch_size: int) -> BatchFeature:
+    def _preprocess_text(self, text_input: Union[List[str], str]) -> tuple:
         """
-        Create inputs for Eagle backbone.
+        Preprocess text inputs for Eagle backbone.
+        
+        Args:
+            text_input: Text string or list of text strings
+            
+        Returns:
+            tuple: (input_ids, attention_mask) for Eagle backbone
+        """
+        # Convert to list if single string
+        if isinstance(text_input, str):
+            text_list = [text_input]
+        else:
+            text_list = text_input
+        
+        # Process text using Eagle processor
+        processed = self.processor.process_text(text_list)
+        
+        input_ids = processed["input_ids"]
+        attention_mask = processed["attention_mask"]
+        
+        return input_ids, attention_mask
+    
+    def _create_joint_eagle_inputs(
+        self, 
+        images: torch.Tensor, 
+        text_input_ids: torch.Tensor,
+        text_attention_mask: torch.Tensor,
+        batch_size: int
+    ) -> BatchFeature:
+        """
+        Create inputs for Eagle backbone with both images and text.
         
         Args:
             images: Preprocessed images [batch_size, channels, height, width]
+            text_input_ids: Tokenized text input [batch_size, text_seq_length]
+            text_attention_mask: Text attention mask [batch_size, text_seq_length]
             batch_size: Batch size
             
         Returns:
             BatchFeature: Inputs for Eagle backbone
         """
-        # Create input IDs with image context tokens
-        seq_length = 64  # Number of image tokens
-        input_ids = torch.zeros(batch_size, seq_length, dtype=torch.long, device=images.device)
+        device = images.device
         
-        # Fill with image context tokens
-        input_ids[:] = self.img_context_token_id
+        # Number of image tokens (from processor config)
+        num_img_tokens = self.processor.model_spec.num_image_token  # Usually 64
         
-        # Create attention mask
-        attention_mask = torch.ones(batch_size, seq_length, device=images.device)
+        # Get text sequence length
+        text_seq_len = text_input_ids.shape[1]
+        
+        # Total sequence length: image tokens + text tokens
+        total_seq_len = num_img_tokens + text_seq_len
+        
+        # Create combined input_ids: [image_tokens, text_tokens]
+        combined_input_ids = torch.zeros(batch_size, total_seq_len, dtype=torch.long, device=device)
+        
+        # Fill first part with image context tokens
+        combined_input_ids[:, :num_img_tokens] = self.img_context_token_id
+        
+        # Fill second part with text tokens
+        combined_input_ids[:, num_img_tokens:] = text_input_ids
+        
+        # Create combined attention mask
+        combined_attention_mask = torch.ones(batch_size, total_seq_len, device=device)
+        # Text attention mask (0s for padding) should be applied to text portion
+        combined_attention_mask[:, num_img_tokens:] = text_attention_mask
         
         return BatchFeature(data={
             "pixel_values": images,
-            "input_ids": input_ids,
-            "attention_mask": attention_mask
+            "input_ids": combined_input_ids,
+            "attention_mask": combined_attention_mask
         })
     
-    def forward(self, obs_dict: Dict[str, torch.Tensor], lang_cond: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self, 
+        obs_dict: Dict[str, torch.Tensor], 
+        lang_input: Optional[Union[str, List[str], torch.Tensor]] = None
+    ) -> torch.Tensor:
         """
-        Forward pass through the Eagle observation encoder.
+        Forward pass through the Eagle joint encoder.
         
         Args:
             obs_dict: Dictionary containing image tensors for each camera
-            lang_cond: Optional language conditioning (not used in this implementation)
-            
+            lang_input: Language input - can be:
+                - Text string or list of strings (will be tokenized)
+                - Pre-computed lang_emb tensor (will be ignored, use text instead)
+                
         Returns:
-            torch.Tensor: Encoded features [batch_size, num_cameras, latent_dim]
+            torch.Tensor: Joint encoded features [batch_size, num_cameras, latent_dim]
         """
         batch_size = None
         features = []
+        
+        # Preprocess text if provided
+        if lang_input is not None:
+            if isinstance(lang_input, torch.Tensor):
+                # If it's a tensor, we can't use it directly with Eagle
+                # Convert to string representation or skip
+                raise ValueError("For joint encoding, lang_input must be text (str or List[str]), not a tensor. "
+                               "Use the text directly for joint encoding.")
+            
+            # Preprocess text
+            text_input_ids, text_attention_mask = self._preprocess_text(lang_input)
+            text_input_ids = text_input_ids.to(self._dummy_variable.device)
+            text_attention_mask = text_attention_mask.to(self._dummy_variable.device)
+        else:
+            # If no text provided, create empty text tokens
+            # This will just encode images (fallback behavior)
+            raise ValueError("lang_input is required for joint encoding. Provide text string or list of strings.")
         
         for camera_name in self.camera_names:
             image_key = f"{camera_name}_image"
@@ -198,49 +265,30 @@ class EagleObsEncoder(nn.Module):
             # Process images for this camera
             processed_images = self._preprocess_images({image_key: images})
             
-            # Create Eagle inputs
-            eagle_inputs = self._create_eagle_inputs(processed_images, batch_size)
+            # Create joint Eagle inputs (images + text)
+            eagle_inputs = self._create_joint_eagle_inputs(
+                processed_images, 
+                text_input_ids, 
+                text_attention_mask,
+                batch_size
+            )
             
             # Forward through Eagle backbone
-            # Eagle backbone internally handles gradients via set_frozen_modules_to_eval_mode()
-            # Frozen modules (tune_llm=False, tune_visual=False) are set to eval (no gradients)
-            # Trainable modules compute gradients normally
-            eagle_outputs = self.eagle_backbone(eagle_inputs)
+            with torch.no_grad() if not self.training else torch.enable_grad():
+                eagle_outputs = self.eagle_backbone(eagle_inputs)
             
             # Extract features and project to latent dimension
             backbone_features = eagle_outputs["backbone_features"]  # [batch_size, seq_length, hidden_dim]
             
-            # Take the first token (image token) and project to latent dimension
-            image_features = backbone_features[:, 0, :]  # [batch_size, hidden_dim]
+            # For joint encoding, we can use different strategies:
+            # 1. Use the first token (image token)
+            # 2. Pool over all tokens (mean/max)
+            # 3. Use specific tokens (e.g., last text token)
+            # Here we'll use mean pooling over the entire sequence to capture both image and text info
+            pooled_features = torch.mean(backbone_features, dim=1)  # [batch_size, hidden_dim]
             
-            # Initialize projection layer lazily based on actual output dimension
-            if not self._projection_initialized:
-                import logging
-                log = logging.getLogger(__name__)
-                actual_output_dim = image_features.shape[-1]
-                # If latent_dim matches output dimension, use identity (no projection needed)
-                if actual_output_dim == self.latent_dim:
-                    # Use identity mapping to preserve all information
-                    # But we still need to convert dtype from BFloat16 to Float32
-                    self.projection = nn.Identity()
-                    self._target_dtype = torch.float32  # Store target dtype for conversion
-                else:
-                    # Use Float32 for projection layer (better for training stability)
-                    self.projection = nn.Linear(actual_output_dim, self.latent_dim).to(
-                        device=image_features.device,
-                        dtype=torch.float32
-                    )
-                    self._target_dtype = torch.float32
-                    log.info(f"Eagle encoder: Detected output dimension {actual_output_dim}, created projection to {self.latent_dim}")
-                # Register as a module so it's properly tracked
-                self.add_module('projection', self.projection)
-                self._projection_initialized = True
-            
-            # Convert dtype to Float32 (Eagle outputs BFloat16, but model expects Float32)
-            if image_features.dtype != self._target_dtype:
-                image_features = image_features.to(self._target_dtype)
-            
-            projected_features = self.projection(image_features)  # [batch_size, latent_dim]
+            # Project to latent dimension
+            projected_features = self.projection(pooled_features)  # [batch_size, latent_dim]
             
             features.append(projected_features)
         
@@ -258,10 +306,10 @@ class EagleObsEncoder(nn.Module):
         return next(iter(self.parameters())).dtype
 
 
-class MultiImageEagleObsEncoder(nn.Module):
+class MultiImageEagleJointEncoder(nn.Module):
     """
-    Multi-image Eagle observation encoder that maintains compatibility with existing code.
-    This is a wrapper around EagleObsEncoder to match the expected interface.
+    Multi-image Eagle joint encoder that maintains compatibility with existing code.
+    This is a wrapper around EagleJointEncoder to match the expected interface.
     """
     
     def __init__(
@@ -269,7 +317,7 @@ class MultiImageEagleObsEncoder(nn.Module):
         shape_meta: dict,
         latent_dim: int = 256,
         model_name: str = DEFAULT_EAGLE_MODEL_NAME,
-        tune_llm: bool = False,
+        tune_llm: bool = True,
         tune_visual: bool = True,
         reproject_vision: bool = False,
         scale_image_resolution: int = 1,
@@ -294,8 +342,8 @@ class MultiImageEagleObsEncoder(nn.Module):
         self.camera_names = camera_names
         self.shape_meta = shape_meta
         
-        # Initialize Eagle encoder
-        self.eagle_encoder = EagleObsEncoder(
+        # Initialize Eagle joint encoder
+        self.eagle_encoder = EagleJointEncoder(
             camera_names=camera_names,
             latent_dim=latent_dim,
             model_name=model_name,
@@ -314,18 +362,22 @@ class MultiImageEagleObsEncoder(nn.Module):
         # Dummy variable for device compatibility
         self._dummy_variable = nn.Parameter(torch.zeros(0))
     
-    def forward(self, obs_dict: Dict[str, torch.Tensor], lang_cond: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self, 
+        obs_dict: Dict[str, torch.Tensor], 
+        lang_input: Optional[Union[str, List[str]]] = None
+    ) -> torch.Tensor:
         """
-        Forward pass through the multi-image Eagle encoder.
+        Forward pass through the multi-image Eagle joint encoder.
         
         Args:
             obs_dict: Dictionary containing image tensors for each camera
-            lang_cond: Optional language conditioning
+            lang_input: Language input (text string or list of strings)
             
         Returns:
-            torch.Tensor: Encoded features [batch_size, num_cameras, latent_dim]
+            torch.Tensor: Joint encoded features [batch_size, num_cameras, latent_dim]
         """
-        return self.eagle_encoder(obs_dict, lang_cond)
+        return self.eagle_encoder(obs_dict, lang_input)
     
     @property
     def device(self):
@@ -351,7 +403,8 @@ class MultiImageEagleObsEncoder(nn.Module):
             )
             example_obs_dict[key] = this_obs
         
-        example_output = self.forward(example_obs_dict)
+        # Use dummy text for output shape
+        example_output = self.forward(example_obs_dict, lang_input="dummy text")
         output_shape = example_output.shape[1:]
         return output_shape
 

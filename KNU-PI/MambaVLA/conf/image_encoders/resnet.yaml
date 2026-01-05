@@ -1,0 +1,20 @@
+_target_: MambaVLA.MultiImageObsEncoder
+shape_meta:
+  obs:
+    agentview_image:
+      shape: [3, 128, 128]
+      type: rgb
+    eye_in_hand_image:
+      shape: [3, 128, 128]
+      type: rgb
+rgb_model:
+  _target_: MambaVLA.ResNetEncoder
+  latent_dim: 256
+  pretrained: false
+  freeze_backbone: false
+  use_mlp: true
+resize_shape: null
+random_crop: false
+use_group_norm: true
+share_rgb_model: false
+imagenet_norm: true

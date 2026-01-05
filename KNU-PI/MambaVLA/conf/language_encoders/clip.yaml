@@ -1,0 +1,2 @@
+# Language encoder configuration
+_target_: MambaVLA.LangClip

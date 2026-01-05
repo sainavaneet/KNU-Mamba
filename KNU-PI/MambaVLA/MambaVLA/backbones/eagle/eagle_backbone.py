@@ -27,7 +27,8 @@ from .eagle2_hg_model.inference_eagle_repo import (
 
 from .eagle2_hg_model.inference_eagle_repo import EagleProcessor, ModelSpecificValues
 
-DEFAULT_EAGLE_MODEL_NAME = "/home/navaneet/original3/MambaVLA/backbones/eagle/eagle2_hg_model"
+# Use relative path based on file location
+DEFAULT_EAGLE_MODEL_NAME = os.path.join(os.path.dirname(__file__), "eagle2_hg_model")
 
 def get_embeddings(
     self,

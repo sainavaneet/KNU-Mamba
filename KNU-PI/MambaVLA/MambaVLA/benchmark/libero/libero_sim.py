@@ -7,6 +7,7 @@ import torch
 import wandb
 import hydra
 import multiprocessing as mp
+import warnings
 # from .base_sim import BaseSim
 # from libero.libero.envs import *
 from tqdm import tqdm
@@ -14,7 +15,16 @@ from libero.libero import benchmark
 from libero.libero.envs import OffScreenRenderEnv
 from colorama import init, Fore, Style, Back
 
+# Suppress robosuite warnings
+warnings.filterwarnings("ignore", message="No private macro file found!")
+warnings.filterwarnings("ignore", message="It is recommended to use a private macro file")
+warnings.filterwarnings("ignore", message="To setup, run:.*setup_macros.py")
+
 log = logging.getLogger(__name__)
+
+# Suppress robosuite logger warnings
+robosuite_logger = logging.getLogger('robosuite_logs')
+robosuite_logger.setLevel(logging.ERROR)
 
 # Initialize colorama for cross-platform colored output
 init(autoreset=True)
@@ -260,7 +270,18 @@ class MultiTaskSim():
             task_video_dir = None
             if self.save_video and self.save_video_dir is not None:
                 os.makedirs(self.save_video_dir, exist_ok=True)
-                task_video_dir = os.path.join(self.save_video_dir, f"{self.benchmark_type}", "videos", f"{file_name}")
+                # If save_video_dir already contains "videos", use it directly, otherwise add task folder
+                if "videos" in self.save_video_dir:
+                    # Already in checkpoint/videos structure
+                    # Add epoch folder if epoch is specified
+                    if hasattr(self, 'current_epoch') and self.current_epoch is not None:
+                        epoch_folder = f"epoch_{self.current_epoch}"
+                        task_video_dir = os.path.join(self.save_video_dir, epoch_folder, f"{file_name}")
+                    else:
+                        task_video_dir = os.path.join(self.save_video_dir, f"{file_name}")
+                else:
+                    # Legacy structure: save_video_dir/{benchmark_type}/videos/{file_name}
+                    task_video_dir = os.path.join(self.save_video_dir, f"{self.benchmark_type}", "videos", f"{file_name}")
     
             # Print task name in a box format
             task_name_length = len(file_name)
@@ -363,6 +384,9 @@ class MultiTaskSim():
 
     def test_model(self, model, model_config, cpu_set=None, epoch=None):
         logging.info("Start testing model on {} tasks".format(self.benchmark_type))
+        
+        # Store epoch for video directory organization
+        self.current_epoch = epoch
 
         # Check if we're in a headless environment and adjust render setting
         if 'DISPLAY' not in os.environ or os.environ.get('DISPLAY') == '':
@@ -516,3 +540,6 @@ class MultiTaskSim():
         log.info(f"{Fore.GREEN}{Style.BRIGHT}══════════════════════════════════════════════════════════════{Style.RESET_ALL}")
         log.info(f"{Fore.GREEN}{Style.BRIGHT}EVALUATION COMPLETE - Final Average Success Rate: {average_success:.3f}{Style.RESET_ALL}")
         log.info(f"{Fore.GREEN}{Style.BRIGHT}══════════════════════════════════════════════════════════════{Style.RESET_ALL}")
+
+
+LiberoSim = MultiTaskSim

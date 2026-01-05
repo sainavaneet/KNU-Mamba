@@ -1,0 +1,69 @@
+# @package model_cfg
+_target_: MambaVLA.MambaVLA
+if_film_condition: false
+consider_robot_states: false
+use_lr_scheduler: false
+perception_seq_len: 1
+action_seq_len: 10
+cam_names:
+  - agentview
+  - eye_in_hand
+device: cuda
+state_dim: 9
+latent_dim: 256
+action_dim: 7
+sampling_steps: 4
+
+# Optimizer configuration
+# Note: This is not instantiated directly - MambaVLA uses it in configure_optimizers()
+optimizer:
+  transformer_weight_decay: 0.05
+  obs_encoder_weight_decay: 0.05
+  learning_rate: 0.0001
+  betas:
+    - 0.9
+    - 0.9
+
+# Learning rate scheduler configuration
+lr_scheduler:
+  init_lr: 0.0001
+  init_lr_scale: 0.1
+  final_lr_scale: 0.000001
+  total_steps: 50000
+  phase_ratio: "(0.02, 0.08, 0.9)"
+  lr: 0.0001
+
+# Action Flow Matching model
+model:
+  _target_: MambaVLA.ActionFLowMatching
+  ln: false
+  device: cuda
+  backbones:
+    _target_: MambaVLA.MambaVLAPolicy
+    latent_dim: 256
+    action_dim: 7
+    lang_emb_dim: 512
+    goal_conditioned: true
+    lang_tok_len: 1
+    obs_tok_len: 2
+    action_seq_len: 10
+    embed_pdrob: 0
+    embed_dim: 256
+    device: cuda
+    linear_output: true
+    use_ada_conditioning: false
+    encoder:
+      _target_: MambaVLA.MambaModel
+      d_model: 256
+      n_layer: 5
+      d_intermediate: 256
+      ssm_cfg:
+        layer: Mamba1
+        d_state: 64
+        d_conv: 4
+        expand: 2
+
+
+# Language encoder configuration
+language_encoders:
+  _target_: MambaVLA.LangClip

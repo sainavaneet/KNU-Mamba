@@ -1,0 +1,31 @@
+# @package trainer
+_target_: MambaVLA.Trainer
+device: cuda
+
+# Data loading configuration
+data_loading:
+  train_batch_size: 256
+  val_batch_size: 256
+  num_workers: 4
+
+# Training process configuration
+training:
+  epoch: 500
+  perception_seq_len: 1
+  eval_every_n_epochs: 1
+  save_every_n_epochs: 10
+
+# Data scaling configuration
+data_scaling:
+  scale_data: true
+  scaling_type: minmax
+
+# Exponential Moving Average configuration
+ema:
+  decay_ema: 0.995
+  if_use_ema: true
+
+# Mixed precision and gradient clipping configuration
+mixed_precision:
+  use_mixed_precision: false
+  gradient_clip_val: 1.0

@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Dict, Any, Callable
 import torchvision.models as models
+from torchvision.models import ResNet18_Weights
 import einops
 
 
@@ -64,7 +65,8 @@ class BesoResNetEncoder(nn.Module):
     ):
         super(BesoResNetEncoder, self).__init__()
         self.latent_dim = latent_dim
-        backbone = models.resnet18(pretrained=pretrained)
+        weights = ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+        backbone = models.resnet18(weights=weights)
         n_inputs = backbone.fc.in_features
         modules = list(backbone.children())[:-1]
         self.backbone = nn.Sequential(*modules)
